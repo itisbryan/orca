@@ -48,6 +48,7 @@ import type {
   GitForkSyncExpectedUpstream,
   GitForkSyncResult,
   GitPushTarget,
+  GitStagingArea,
   GitStatusResult,
   GitUpstreamStatus,
   GitHubAssignableUser,
@@ -2210,6 +2211,12 @@ export type PreloadApi = {
       connectionId?: string
       includeIgnored?: boolean
       bypassEffectiveUpstreamNegativeCache?: boolean
+    }) => Promise<GitStatusResult>
+    submoduleStatus: (args: {
+      worktreePath: string
+      submodulePath: string
+      connectionId?: string
+      area?: GitStagingArea
     }) => Promise<GitStatusResult>
     checkIgnored: (args: {
       worktreePath: string

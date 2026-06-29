@@ -5236,7 +5236,11 @@
           "sourceControlGroupOrderDescription": "Choose whether Changes, Staged Changes, or Untracked Files appear first in Source Control.",
           "changesFirst": "Changes first",
           "stagedFirst": "Staged first",
-          "untrackedFirst": "Untracked first"
+          "untrackedFirst": "Untracked first",
+          "compareAgainstUpstreamTitle": "Default Compare Base",
+          "compareAgainstUpstreamDescription": "Choose which base Source Control uses by default for committed-change comparisons. Branch upstream follows the current branch automatically and falls back to the repository default branch when no upstream exists. You can still change the compare base per worktree from that worktree's Git panel. Pull Request and rebase targets don't change.",
+          "compareBaseRepositoryDefault": "Repository default",
+          "compareBaseBranchUpstream": "Branch upstream"
         },
         "HiddenExperimentalGroup": {
           "d0f914a528": "Placeholder toggle",
@@ -7376,7 +7380,19 @@
             "stagedFirst": "staged first",
             "untrackedFirst": "untracked first",
             "sourceControl": "source control",
-            "gitChanges": "git changes"
+            "gitChanges": "git changes",
+            "compareAgainstUpstreamTitle": "Default Compare Base",
+            "compareAgainstUpstreamDescription": "Choose which base Source Control uses by default for committed-change comparisons. Branch upstream follows the current branch automatically and falls back to the repository default branch when no upstream exists. You can still change the compare base per worktree from that worktree's Git panel. Pull Request and rebase targets don't change.",
+            "compareBase": "compare base",
+            "defaultCompareBase": "default compare base",
+            "defaultBranch": "default branch",
+            "repositoryDefault": "repository default",
+            "branchUpstream": "branch upstream",
+            "currentBranch": "current branch",
+            "upstream": "upstream",
+            "localChanges": "local changes",
+            "originMaster": "origin/master",
+            "committedChanges": "committed changes"
           }
         },
         "input": {

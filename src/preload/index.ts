@@ -26,6 +26,7 @@ import type {
   GitHubCommentResult,
   GitHubWorkItem,
   GitPushTarget,
+  GitStagingArea,
   GitForkSyncExpectedUpstream,
   GitForkSyncResult,
   GitUpstreamStatus,
@@ -2657,6 +2658,12 @@ const api = {
       includeIgnored?: boolean
       bypassEffectiveUpstreamNegativeCache?: boolean
     }): Promise<unknown> => ipcRenderer.invoke('git:status', args),
+    submoduleStatus: (args: {
+      worktreePath: string
+      submodulePath: string
+      connectionId?: string
+      area?: GitStagingArea
+    }): Promise<unknown> => ipcRenderer.invoke('git:submoduleStatus', args),
     checkIgnored: (args: {
       worktreePath: string
       paths: string[]
