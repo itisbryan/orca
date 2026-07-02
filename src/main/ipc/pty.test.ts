@@ -4314,7 +4314,8 @@ describe('registerPtyHandlers', () => {
       worktreeId: 'wt-1',
       tabId: 'tab-race',
       leafId,
-      ptyId: 'pty-shared'
+      ptyId: 'pty-shared',
+      startupCwd: '/tmp'
     })
   })
 
@@ -4427,7 +4428,8 @@ describe('registerPtyHandlers', () => {
       worktreeId: 'wt-1',
       tabId: 'tab-race',
       leafId,
-      ptyId: 'pty-renderer'
+      ptyId: 'pty-renderer',
+      startupCwd: '/tmp'
     })
   })
 

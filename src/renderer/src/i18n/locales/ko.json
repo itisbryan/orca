@@ -4076,7 +4076,8 @@
           "hostAuthNeeded": "인증 필요",
           "hostDisconnected": "연결 끊김",
           "failedNestWorkspace": "워크스페이스를 중첩하지 못했습니다",
-          "sidebarRowMissing": "대상이 더 이상 존재하지 않습니다"
+          "sidebarRowMissing": "대상이 더 이상 존재하지 않습니다",
+          "failedUnnestWorkspace": "Failed to unnest workspace"
         },
         "WorktreeMetaDialog": {
           "3db0a2a593": "취소",
@@ -8819,7 +8820,8 @@
             "98a79948b3": "복사",
             "b234ab25b4": "파일을 클립보드에 복사하지 못했습니다",
             "f9d7ca753d": "경로 복사",
-            "3161c4e425": "폴더"
+            "3161c4e425": "폴더",
+            "e887fa4b2e": "터미널에서 열기"
           },
           "FileExplorerToolbar": {
             "d238264654": "Git이 무시한 파일 표시",

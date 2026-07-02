@@ -4076,7 +4076,8 @@
           "hostAuthNeeded": "需要身份验证",
           "hostDisconnected": "已断开连接",
           "failedNestWorkspace": "无法嵌套工作区",
-          "sidebarRowMissing": "目标不再存在"
+          "sidebarRowMissing": "目标不再存在",
+          "failedUnnestWorkspace": "Failed to unnest workspace"
         },
         "WorktreeMetaDialog": {
           "3db0a2a593": "取消",
@@ -8819,7 +8820,8 @@
             "98a79948b3": "复制",
             "b234ab25b4": "无法将文件复制到剪贴板",
             "f9d7ca753d": "复制路径",
-            "3161c4e425": "文件夹"
+            "3161c4e425": "文件夹",
+            "e887fa4b2e": "在终端中打开"
           },
           "FileExplorerToolbar": {
             "d238264654": "显示 Git 忽略的文件",
