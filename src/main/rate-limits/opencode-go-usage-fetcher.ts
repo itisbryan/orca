@@ -1,6 +1,13 @@
 import { net } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { ProviderRateLimits, RateLimitWindow } from '../../shared/rate-limit-types'
+import {
+  credentialFragments,
+  logInfo,
+  logWarning,
+  transportErrorDiagnostic,
+  workspaceDiagnostic
+} from './opencode-go-fetch-diagnostics'
 import { parseSubscriptionFromPageText } from './opencode-go-page-scraper'
 
 const OPENCODE_BASE_URL = 'https://opencode.ai'
@@ -85,8 +92,13 @@ export async function fetchOpenCodeGoRateLimits(
 ): Promise<ProviderRateLimits> {
   // Normalize before any guard — bare tokens become auth=<token>.
   const normalizedCookie = normalizeCookieInput(cookie)
+  const override = workspaceIdOverride?.trim()
 
   if (!normalizedCookie) {
+    logWarning('config-validation', {
+      outcome: 'missing-cookie',
+      workspaceOverrideProvided: Boolean(override)
+    })
     return {
       provider: 'opencode-go',
       session: null,
@@ -101,6 +113,10 @@ export async function fetchOpenCodeGoRateLimits(
   // Filter to only auth cookies — avoids sending unrelated session data.
   const cookieHeader = filterAuthCookie(normalizedCookie)
   if (!cookieHeader) {
+    logWarning('config-validation', {
+      outcome: 'missing-auth-cookie',
+      workspaceOverrideProvided: Boolean(override)
+    })
     return {
       provider: 'opencode-go',
       session: null,
@@ -114,10 +130,13 @@ export async function fetchOpenCodeGoRateLimits(
 
   // Step 1: resolve workspace IDs to try.
   let ids: string[] = []
-  const override = workspaceIdOverride?.trim()
 
   if (override) {
     if (!/^(wrk|wk)_[A-Za-z0-9]+$/.test(override)) {
+      logWarning('config-validation', {
+        outcome: 'invalid-workspace-override',
+        workspaceOverrideLength: override.length
+      })
       return {
         provider: 'opencode-go',
         session: null,
@@ -128,13 +147,23 @@ export async function fetchOpenCodeGoRateLimits(
         status: 'error'
       }
     }
+    logInfo('config-validation', {
+      outcome: 'valid',
+      workspaceOverrideProvided: true
+    })
+    logInfo('workspace-override-selected', workspaceDiagnostic(override))
     ids = [override]
   } else {
+    logInfo('config-validation', {
+      outcome: 'valid',
+      workspaceOverrideProvided: false
+    })
     try {
       // The /_server endpoint uses SST server-function protocol: GET with ?id=<hash>
       // and X-Server-Id / X-Server-Instance headers for routing.
       const instanceId = `server-fn:${randomUUID()}`
       const workspacesUrl = `${OPENCODE_SERVER_URL}?id=${WORKSPACES_SERVER_ID}`
+      logInfo('workspace-lookup-start', { timeoutMs: API_TIMEOUT_MS })
       const workspacesRes = await net.fetch(workspacesUrl, {
         method: 'GET',
         headers: {
@@ -147,8 +176,13 @@ export async function fetchOpenCodeGoRateLimits(
         },
         signal: AbortSignal.timeout(API_TIMEOUT_MS)
       })
+      const workspaceHttpDiagnostic = {
+        status: workspacesRes.status,
+        ok: workspacesRes.ok
+      }
 
       if (!workspacesRes.ok) {
+        logWarning('workspace-lookup-http', workspaceHttpDiagnostic)
         return {
           provider: 'opencode-go',
           session: null,
@@ -159,11 +193,20 @@ export async function fetchOpenCodeGoRateLimits(
           status: 'error'
         }
       }
+      logInfo('workspace-lookup-http', workspaceHttpDiagnostic)
 
       const workspacesText = await workspacesRes.text()
       ids = parseWorkspaceIds(workspacesText)
+      logInfo('workspace-lookup-parsed', { workspaceCount: ids.length })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
+      logWarning('transport-exception', {
+        requestStage: 'workspace-lookup',
+        error: transportErrorDiagnostic(
+          err,
+          credentialFragments(cookie, normalizedCookie, cookieHeader)
+        )
+      })
       return {
         provider: 'opencode-go',
         session: null,
@@ -177,6 +220,7 @@ export async function fetchOpenCodeGoRateLimits(
   }
 
   if (ids.length === 0) {
+    logWarning('workspace-selection', { outcome: 'no-workspaces' })
     return {
       provider: 'opencode-go',
       session: null,
@@ -192,9 +236,15 @@ export async function fetchOpenCodeGoRateLimits(
   // and valid usage data. Each candidate gets its own timeout so a slow or
   // hung candidate cannot starve the rest.
   let lastError = ''
-  for (const candidateId of ids) {
+  for (const [candidateIndex, candidateId] of ids.entries()) {
+    const candidateDiagnostic = workspaceDiagnostic(candidateId)
     try {
       const usagePageUrl = `${OPENCODE_BASE_URL}/workspace/${candidateId}/go`
+      logInfo('usage-page-attempt', {
+        attempt: candidateIndex + 1,
+        workspaceCount: ids.length,
+        ...candidateDiagnostic
+      })
       const pageRes = await net.fetch(usagePageUrl, {
         method: 'GET',
         headers: {
@@ -205,20 +255,35 @@ export async function fetchOpenCodeGoRateLimits(
         },
         signal: AbortSignal.timeout(API_TIMEOUT_MS)
       })
+      const usageHttpDiagnostic = {
+        status: pageRes.status,
+        ok: pageRes.ok,
+        ...candidateDiagnostic
+      }
 
       if (!pageRes.ok) {
+        logWarning('usage-page-http', usageHttpDiagnostic)
         lastError = `Usage page fetch failed (${pageRes.status})`
         continue
       }
+      logInfo('usage-page-http', usageHttpDiagnostic)
 
       const pageText = await pageRes.text()
       const parsed = parseSubscriptionFromPageText(pageText)
+      logInfo('usage-page-parser', {
+        outcome: parsed ? 'parsed' : 'no-usage-data',
+        ...candidateDiagnostic
+      })
       if (parsed) {
         const monthly =
           parsed.monthlyUsagePercent !== null && parsed.monthlyResetInSec !== null
             ? makeWindow(parsed.monthlyUsagePercent, parsed.monthlyResetInSec, 43200) // 30d
             : null
 
+        logInfo('refresh-success', {
+          monthlyWindowAvailable: monthly !== null,
+          ...candidateDiagnostic
+        })
         return {
           provider: 'opencode-go',
           session: makeWindow(parsed.rollingUsagePercent, parsed.rollingResetInSec, 300),
@@ -232,6 +297,14 @@ export async function fetchOpenCodeGoRateLimits(
       lastError = 'Could not parse usage data from page'
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
+      logWarning('transport-exception', {
+        requestStage: 'usage-page',
+        ...candidateDiagnostic,
+        error: transportErrorDiagnostic(
+          err,
+          credentialFragments(cookie, normalizedCookie, cookieHeader)
+        )
+      })
       lastError = message
     }
   }

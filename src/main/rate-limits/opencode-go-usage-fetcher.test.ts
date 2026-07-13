@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const netFetchMock = vi.hoisted(() => vi.fn())
 
@@ -36,12 +36,23 @@ $R[20]={rollingUsage:$R[21]={status:"ok",resetInSec:3600,usagePercent:10},weekly
 `
 
 const WORKSPACES_RESPONSE = 'id: "wrk_TESTWORKSPACEID123"'
+const LOG_PREFIX = '[opencode-go-rate-limits]'
+
+let consoleInfoSpy: ReturnType<typeof vi.spyOn>
+let consoleWarnSpy: ReturnType<typeof vi.spyOn>
 
 describe('fetchOpenCodeGoRateLimits', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-04-24T12:00:00.000Z'))
     netFetchMock.mockReset()
+    consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    consoleInfoSpy.mockRestore()
+    consoleWarnSpy.mockRestore()
   })
 
   it('returns unavailable when cookie is empty', async () => {
@@ -54,6 +65,10 @@ describe('fetchOpenCodeGoRateLimits', () => {
     expect(result.monthly).toBeNull()
     expect(result.error).toBe('Session cookie not configured')
     expect(netFetchMock).not.toHaveBeenCalled()
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      `${LOG_PREFIX} config-validation`,
+      expect.objectContaining({ outcome: 'missing-cookie' })
+    )
   })
 
   it('returns unavailable when cookie is only whitespace', async () => {
@@ -346,5 +361,110 @@ describe('fetchOpenCodeGoRateLimits', () => {
     expect(result.status).toBe('error')
     expect(result.error).toBe('network timeout')
     expect(result.error).not.toContain('secret123')
+  })
+
+  it('logs each successful refresh stage without credentials or full workspace IDs', async () => {
+    const cookieSecret = 'credential-that-must-not-be-logged'
+    const workspaceId = 'wrk_TESTWORKSPACEID123'
+    netFetchMock
+      .mockResolvedValueOnce(makeResponse(WORKSPACES_RESPONSE))
+      .mockResolvedValueOnce(makeResponse(USAGE_PAGE_WITH_MONTHLY))
+
+    const result = await fetchOpenCodeGoRateLimits(`auth=${cookieSecret}`)
+
+    expect(result.status).toBe('ok')
+    for (const event of [
+      'config-validation',
+      'workspace-lookup-start',
+      'workspace-lookup-http',
+      'workspace-lookup-parsed',
+      'usage-page-attempt',
+      'usage-page-http',
+      'usage-page-parser',
+      'refresh-success'
+    ]) {
+      expect(consoleInfoSpy).toHaveBeenCalledWith(`${LOG_PREFIX} ${event}`, expect.any(Object))
+    }
+
+    const serializedLogs = JSON.stringify([
+      ...consoleInfoSpy.mock.calls,
+      ...consoleWarnSpy.mock.calls
+    ])
+    expect(serializedLogs).not.toContain(cookieSecret)
+    expect(serializedLogs).not.toContain(`auth=${cookieSecret}`)
+    expect(serializedLogs).not.toContain(workspaceId)
+    expect(serializedLogs).toContain('workspaceSuffix')
+  })
+
+  it('logs direct workspace selection using only a safe workspace summary', async () => {
+    const workspaceId = 'wrk_PRIVATEWORKSPACE9876'
+    netFetchMock.mockResolvedValueOnce(makeResponse(USAGE_PAGE_WITH_MONTHLY))
+
+    await fetchOpenCodeGoRateLimits('auth=mytoken', workspaceId)
+
+    expect(consoleInfoSpy).toHaveBeenCalledWith(`${LOG_PREFIX} workspace-override-selected`, {
+      workspaceLength: workspaceId.length,
+      workspaceSuffix: '9876'
+    })
+    expect(JSON.stringify(consoleInfoSpy.mock.calls)).not.toContain(workspaceId)
+  })
+
+  it('does not log invalid overrides or short workspace IDs', async () => {
+    const invalidOverride = 'credential-mistaken-for-workspace'
+
+    await fetchOpenCodeGoRateLimits('auth=mytoken', invalidOverride)
+
+    expect(consoleWarnSpy).toHaveBeenCalledWith(`${LOG_PREFIX} config-validation`, {
+      outcome: 'invalid-workspace-override',
+      workspaceOverrideLength: invalidOverride.length
+    })
+    expect(JSON.stringify(consoleWarnSpy.mock.calls)).not.toContain(invalidOverride)
+
+    consoleInfoSpy.mockClear()
+    netFetchMock.mockResolvedValueOnce(makeResponse(USAGE_PAGE_WITH_MONTHLY))
+    await fetchOpenCodeGoRateLimits('auth=mytoken', 'wk_a')
+
+    expect(consoleInfoSpy).toHaveBeenCalledWith(`${LOG_PREFIX} workspace-override-selected`, {
+      workspaceLength: 4,
+      workspaceSuffix: '[REDACTED]'
+    })
+    expect(JSON.stringify(consoleInfoSpy.mock.calls)).not.toContain('wk_a')
+  })
+
+  it('logs detailed sanitized usage-page transport errors', async () => {
+    const cookieSecret = 'transport-cookie-secret'
+    const workspaceId = 'wrk_TRANSPORTSECRET1234'
+    const transportError = Object.assign(
+      new Error(
+        `net::ERR_FAILED auth=${cookieSecret} https://opencode.ai/workspace/${workspaceId}/go`
+      ),
+      {
+        code: 'ERR_FAILED',
+        cause: Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
+      }
+    )
+    netFetchMock
+      .mockResolvedValueOnce(makeResponse(`id: "${workspaceId}"`))
+      .mockRejectedValueOnce(transportError)
+
+    const result = await fetchOpenCodeGoRateLimits(`auth=${cookieSecret}`)
+
+    expect(result.status).toBe('error')
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      `${LOG_PREFIX} transport-exception`,
+      expect.objectContaining({
+        requestStage: 'usage-page',
+        error: {
+          name: 'Error',
+          message: expect.stringContaining('net::ERR_FAILED'),
+          code: 'ERR_FAILED',
+          cause: { name: 'Error', message: 'socket reset', code: 'ECONNRESET' }
+        }
+      })
+    )
+    const serializedLogs = JSON.stringify(consoleWarnSpy.mock.calls)
+    expect(serializedLogs).not.toContain(cookieSecret)
+    expect(serializedLogs).not.toContain(workspaceId)
+    expect(serializedLogs).not.toContain('https://opencode.ai/workspace/')
   })
 })
