@@ -24,6 +24,7 @@ type Harness = {
     readFileSync: ReturnType<typeof vi.fn>
   }
   handlers: Record<string, HookHandler>
+  processEnv: Record<string, string | undefined>
   callHook: (name: string, event?: unknown) => Promise<void>
 }
 
@@ -146,6 +147,7 @@ function createHarness(args: {
     spawnedChildren,
     fsMock,
     handlers,
+    processEnv: processMock.env,
     callHook: async (name, event) => {
       await handlers[name]?.(event)
     }
@@ -165,6 +167,35 @@ describe('getPiAgentStatusExtensionSource', () => {
     expect(harness.fetchMock).toHaveBeenCalledTimes(1)
     expect(harness.fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:4321/hook/omp')
     expect(harness.spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('stays silent for a nested subagent whose env is already owned', async () => {
+    // Why: Pi runs subagents as nested child processes that inherit the lead's
+    // env (ORCA_PI_STATUS_OWNED already set). Their agent_end must not post, or
+    // every subagent completion fires a false "finished" notification on the
+    // lead pane (issue #6361 follow-up).
+    const harness = createHarness({ kind: 'pi', env: { ORCA_PI_STATUS_OWNED: '1' } })
+
+    await harness.callHook('agent_start')
+    await harness.callHook('agent_end')
+
+    expect(harness.fetchMock).not.toHaveBeenCalled()
+    expect(harness.spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('reports agent_end for a top-level run (including non-interactive) and claims the pane', async () => {
+    // Why: the lead process (interactive TUI or a non-interactive `pi -p`) has
+    // no owner marker yet, so it reports and then claims the env for the panes's
+    // subagents.
+    const harness = createHarness({ kind: 'pi' })
+
+    await harness.callHook('agent_end')
+
+    expect(harness.fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(String(harness.fetchMock.mock.calls[0]?.[1]?.body))
+    expect(body.payload).toEqual({ hook_event_name: 'agent_end' })
+    // Registering the extension marks the env so any spawned subagent inherits it.
+    expect(harness.processEnv.ORCA_PI_STATUS_OWNED).toBe('1')
   })
 
   it('keeps native fetch as the only path even when the runtime looks like WSL', async () => {
