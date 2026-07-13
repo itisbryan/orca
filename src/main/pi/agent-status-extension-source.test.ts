@@ -183,6 +183,22 @@ describe('getPiAgentStatusExtensionSource', () => {
     expect(harness.spawnMock).not.toHaveBeenCalled()
   })
 
+  it('stays silent for every guarded event in a nested subagent, not just agent_end', async () => {
+    // Why: all lifecycle/tool/message handlers share the same reportsToPane()
+    // guard; assert the shared gate holds for a non-agent_end event so a future
+    // per-event refactor can't silently reopen the notification leak.
+    const harness = createHarness({ kind: 'pi', env: { ORCA_PI_STATUS_OWNED: '1' } })
+
+    await harness.callHook('before_agent_start', { prompt: 'do the thing' })
+    await harness.callHook('tool_call', { toolName: 'bash', input: { command: 'ls' } })
+    await harness.callHook('tool_execution_start', { toolName: 'bash', args: { command: 'ls' } })
+    await harness.callHook('tool_execution_end', { toolName: 'bash' })
+    await harness.callHook('message_end', { message: { role: 'assistant', content: 'hi' } })
+
+    expect(harness.fetchMock).not.toHaveBeenCalled()
+    expect(harness.spawnMock).not.toHaveBeenCalled()
+  })
+
   it('reports agent_end for a top-level run (including non-interactive) and claims the pane', async () => {
     // Why: the lead process (interactive TUI or a non-interactive `pi -p`) has
     // no owner marker yet, so it reports and then claims the env for the panes's
