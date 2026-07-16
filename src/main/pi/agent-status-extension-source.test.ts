@@ -42,9 +42,8 @@ const BASE_ENV = {
   ORCA_AGENT_HOOK_VERSION: '1.2.3'
 } satisfies Record<string, string>
 
-// Why: the reporting gate keys on process.pid, so the mock needs a stable pid.
-// Nested-subagent tests inject a DIFFERENT owner pid to emulate an inherited
-// marker from the lead process.
+// Why: ownership keys on process.pid, so reload and child-process tests need
+// stable, distinct identities.
 const SELF_PID = 4242
 
 function createHarness(args: {
@@ -188,71 +187,43 @@ describe('getPiAgentStatusExtensionSource', () => {
     expect(harness.spawnMock).not.toHaveBeenCalled()
   })
 
-  it('stays silent for a nested subagent whose env owner pid is another process', async () => {
-    // Why: Pi runs subagents as nested child processes that inherit the lead's
-    // env (ORCA_PI_STATUS_OWNED = lead pid, here another process). Their
-    // agent_end must not post, or every subagent completion fires a false
-    // "finished" notification on the lead pane (issue #6361 follow-up).
-    const harness = createHarness({
-      kind: 'pi',
-      pid: SELF_PID,
-      env: { ORCA_PI_STATUS_OWNED: '99' }
-    })
+  it.each(['pi', 'omp'] as const)(
+    'registers no status handlers for a nested %s subagent process',
+    (kind) => {
+      // Why: inheriting the lead's owner PID must disable the extension as a
+      // whole, so future hook additions cannot reopen the notification leak.
+      const lead = createHarness({ kind, pid: SELF_PID })
+      const child = createHarness({ kind, pid: SELF_PID + 1, env: lead.processEnv })
+      const grandchild = createHarness({ kind, pid: SELF_PID + 2, env: child.processEnv })
 
-    await harness.callHook('agent_start')
-    await harness.callHook('agent_end')
-
-    expect(harness.fetchMock).not.toHaveBeenCalled()
-    expect(harness.spawnMock).not.toHaveBeenCalled()
-  })
-
-  it('stays silent for every guarded event in a nested subagent, not just agent_end', async () => {
-    // Why: all lifecycle/tool/message handlers share the same reportsToPane()
-    // guard; assert the shared gate holds for a non-agent_end event so a future
-    // per-event refactor can't silently reopen the notification leak.
-    const harness = createHarness({
-      kind: 'pi',
-      pid: SELF_PID,
-      env: { ORCA_PI_STATUS_OWNED: '99' }
-    })
-
-    await harness.callHook('before_agent_start', { prompt: 'do the thing' })
-    await harness.callHook('tool_call', { toolName: 'bash', input: { command: 'ls' } })
-    await harness.callHook('tool_execution_start', { toolName: 'bash', args: { command: 'ls' } })
-    await harness.callHook('tool_execution_end', { toolName: 'bash' })
-    await harness.callHook('message_end', { message: { role: 'assistant', content: 'hi' } })
-
-    expect(harness.fetchMock).not.toHaveBeenCalled()
-    expect(harness.spawnMock).not.toHaveBeenCalled()
-  })
+      expect(child.handlers).toEqual({})
+      expect(grandchild.handlers).toEqual({})
+      expect(child.processEnv.ORCA_PI_STATUS_OWNED).toBe(String(SELF_PID))
+      expect(grandchild.processEnv.ORCA_PI_STATUS_OWNED).toBe(String(SELF_PID))
+      expect(child.fetchMock).not.toHaveBeenCalled()
+      expect(child.spawnMock).not.toHaveBeenCalled()
+    }
+  )
 
   it('reports agent_end for a top-level run (including non-interactive) and claims the pane by pid', async () => {
-    // Why: the lead process (interactive TUI or a non-interactive `pi -p`) has
-    // no owner marker yet, so it reports and then claims the env by its own pid
-    // so any spawned subagent inherits it.
-    const harness = createHarness({ kind: 'pi', pid: SELF_PID })
+    // Why: non-interactive top-level runs still own their pane and must report.
+    const harness = createHarness({ kind: 'pi', pid: SELF_PID, argv: ['node', 'pi', '-p'] })
 
     await harness.callHook('agent_end')
 
     expect(harness.fetchMock).toHaveBeenCalledTimes(1)
     const body = JSON.parse(String(harness.fetchMock.mock.calls[0]?.[1]?.body))
     expect(body.payload).toEqual({ hook_event_name: 'agent_end' })
-    // Claiming records this process's pid so spawned subagents inherit it.
     expect(harness.processEnv.ORCA_PI_STATUS_OWNED).toBe(String(SELF_PID))
   })
 
   it('keeps reporting after the lead re-runs the extension factory on reload', async () => {
-    // Why: Pi re-invokes the extension default export on every in-process
-    // extension reload (/reload, live edit, settings reload). The first run
-    // claims the pane by pid; the reload run must still recognize its own pid as
-    // owner and keep reporting. A boolean-'1' marker would read the reload as
-    // already-owned and silence the lead pane for the rest of the session.
+    // Why: Pi reloads extensions in-process, so the lead must recognize its PID
+    // instead of mistaking its own marker for a nested child.
     const harness = createHarness({ kind: 'pi', pid: SELF_PID })
 
-    // First registration claims the pane (no owner marker inherited).
     expect(harness.processEnv.ORCA_PI_STATUS_OWNED).toBe(String(SELF_PID))
 
-    // Same process re-loads the extension — the factory runs again.
     harness.reload()
     await harness.callHook('agent_end')
 
