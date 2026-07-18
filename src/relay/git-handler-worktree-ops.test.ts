@@ -133,6 +133,57 @@ describe('addWorktreeOp', () => {
     ])
     warnSpy.mockRestore()
   })
+
+  it('treats a post-checkout hook failure as success when the SSH worktree was created', async () => {
+    // Why: mirrors the local salvage — overcommit/husky hooks fail after
+    // `git worktree add` fully created the worktree and branch.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const git = vi.fn<GitExec>(async (args) => {
+      if (args[0] === 'worktree') {
+        throw new Error('overcommit: command not found')
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+        return { stdout: 'feature/test\n', stderr: '' }
+      }
+      return { stdout: '', stderr: '' }
+    })
+
+    await expect(
+      addWorktreeOp(git, {
+        repoPath: '/repo',
+        branchName: 'feature/test',
+        targetDir: '/repo-feature',
+        base: 'origin/main'
+      })
+    ).resolves.toBeUndefined()
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('post-checkout hook failed'),
+      expect.any(Error)
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('still fails when the SSH worktree add dies before checkout completes', async () => {
+    const git = vi.fn<GitExec>(async (args) => {
+      if (args[0] === 'worktree') {
+        throw new Error("fatal: could not create work tree dir '/repo-feature'")
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+        throw new Error('fatal: not a git repository')
+      }
+      return { stdout: '', stderr: '' }
+    })
+
+    await expect(
+      addWorktreeOp(git, {
+        repoPath: '/repo',
+        branchName: 'feature/test',
+        targetDir: '/repo-feature',
+        base: 'origin/main'
+      })
+    ).rejects.toThrow('could not create work tree dir')
+  })
 })
 
 describe('removeWorktreeOp', () => {

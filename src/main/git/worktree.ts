@@ -928,6 +928,45 @@ async function refreshLocalBaseRefForWorktreeCreate(
   }
 }
 
+// Why: `git worktree add` / `git checkout` run the repo's post-checkout hook
+// (overcommit, husky, ...) only after the checkout has fully completed, and a
+// broken hook — e.g. overcommit's stub without the gem installed — makes git
+// exit non-zero even though the worktree and branch exist. If the worktree is
+// on the expected branch with a clean tree, only the hook can have failed, so
+// creation must not be reported as an error (or rolled back on the sparse
+// path). Timeouts/aborts are excluded: a killed git skips its own junk
+// cleanup and can leave a half-populated checkout that passes the HEAD check.
+// SSH parity: src/relay/git-handler-worktree-ops.ts mirrors this salvage.
+async function isPostCheckoutHookOnlyFailure(
+  error: unknown,
+  worktreePath: string,
+  branch: string,
+  options: GitWorktreeExecOptions
+): Promise<boolean> {
+  if (
+    error instanceof Error &&
+    (error.name === 'AbortError' || error.message.endsWith('timed out.'))
+  ) {
+    return false
+  }
+  try {
+    const { stdout: head } = await gitExecFileAsync(
+      ['rev-parse', '--abbrev-ref', 'HEAD'],
+      gitExecOptions(worktreePath, options)
+    )
+    if (head.trim() !== branch) {
+      return false
+    }
+    const { stdout: status } = await gitExecFileAsync(
+      ['status', '--porcelain'],
+      gitExecOptions(worktreePath, options)
+    )
+    return status.trim() === ''
+  } catch {
+    return false
+  }
+}
+
 /**
  * Create a new worktree.
  * @param repoPath - Path to the main repo (or bare repo)
@@ -1019,12 +1058,26 @@ async function performAddWorktree(
       args.push(effectiveBase)
     }
   }
-  await gitExecFileAsync(args, {
-    ...gitExecOptions(repoPath, options),
-    // Why: bound the checkout so a OneDrive cloud-placeholder stall (STA-1292)
-    // fails fast rather than hanging worktree creation indefinitely.
-    timeout: WORKTREE_ADD_TIMEOUT_MS
-  })
+  try {
+    await gitExecFileAsync(args, {
+      ...gitExecOptions(repoPath, options),
+      // Why: bound the checkout so a OneDrive cloud-placeholder stall (STA-1292)
+      // fails fast rather than hanging worktree creation indefinitely.
+      timeout: WORKTREE_ADD_TIMEOUT_MS
+    })
+  } catch (error) {
+    // Why: --no-checkout runs no post-checkout hook, so its failures are real.
+    if (
+      noCheckout ||
+      !(await isPostCheckoutHookOnlyFailure(error, worktreePath, branch, options))
+    ) {
+      throw error
+    }
+    console.warn(
+      `addWorktree: post-checkout hook failed for ${worktreePath}; worktree and branch were created`,
+      error
+    )
+  }
 
   if (options.checkoutExistingBranch) {
     return localBaseRefRefresh ? { localBaseRefRefresh } : {}
@@ -1126,7 +1179,17 @@ export async function addSparseWorktree(
       ['sparse-checkout', 'set', '--', ...directories],
       gitExecOptions(worktreePath, options)
     )
-    await gitExecFileAsync(['checkout', branch], gitExecOptions(worktreePath, options))
+    try {
+      await gitExecFileAsync(['checkout', branch], gitExecOptions(worktreePath, options))
+    } catch (error) {
+      if (!(await isPostCheckoutHookOnlyFailure(error, worktreePath, branch, options))) {
+        throw error
+      }
+      console.warn(
+        `addSparseWorktree: post-checkout hook failed for ${worktreePath}; worktree and branch were created`,
+        error
+      )
+    }
     return addResult
   } catch (error) {
     const wrapped: SparseWorktreeCreateError =
