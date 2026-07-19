@@ -217,6 +217,11 @@ describe('addWorktreeOp', () => {
         base: 'origin/main'
       })
     ).rejects.toThrow('aborted')
+    expect(git.mock.calls.map((call) => call[0])).not.toContainEqual([
+      'rev-parse',
+      '--abbrev-ref',
+      'HEAD'
+    ])
   })
 
   it('still fails when the SSH worktree add dies before checkout completes', async () => {
